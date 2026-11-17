@@ -115,9 +115,28 @@ Kullanıcıdan gelen mesajı analiz et ve SADECE geçerli bir JSON objesi dönd�
     "tags": "etiketler"
 }}
 """
-    # 1. Önce Gemini ile dene (Gemini kişisel verilerde reddetme yapmaz)
+    # 1. Önce Groq LPU ile ultra hızlı niyet analizi (300 ms)
+    if groq_client:
+        for model_name in ["qwen/qwen3.8-27b", "openai/gpt-oss-20b", "openai/gpt-oss-120b"]:
+            try:
+                response = groq_client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": text}
+                    ],
+                    temperature=0.1,
+                    response_format={"type": "json_object"}
+                )
+                raw_content = response.choices[0].message.content
+                if raw_content:
+                    return json.loads(raw_content)
+            except Exception:
+                continue
+
+    # 2. Groq meşgulse Gemini ile dene (Yedek)
     if genai_client:
-        models_to_try = ["gemini-3.8-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+        models_to_try = ["gemini-3.8-flash", "gemini-2.0-flash", "gemini-2.5-flash"]
         for m in models_to_try:
             try:
                 resp = genai_client.models.generate_content(
@@ -130,24 +149,7 @@ Kullanıcıdan gelen mesajı analiz et ve SADECE geçerli bir JSON objesi dönd�
             except Exception:
                 continue
 
-    # 2. Gemini olmazsa Groq ile dene
-    if groq_client:
-        try:
-            response = groq_client.chat.completions.create(
-                model="openai/gpt-oss-120b",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": text}
-                ],
-                temperature=0.1,
-                response_format={"type": "json_object"}
-            )
-            raw_content = response.choices[0].message.content
-            return json.loads(raw_content)
-        except Exception:
-            pass
-
-    # 3. Fallback: Eğer modeller JSON üretmeyi reddederse akıllı sezgisel yönlendirme
+    # 3. Fallback: Eğer modeller JSON üretmeyi reddederse akıllı sezgisel yönlendirme (0 ms)
     lower_text = text.lower()
     if any(q in lower_text for q in ["neydi", "kaçtı", "nerede", "kimdi", "ne zaman", "hangisi", "?"]):
         return {"action": "query", "search_keywords": text, "question": text}
@@ -178,9 +180,24 @@ GÖREVİN:
 2. Bu kullanıcının kendi şahsi notudur, güvenlik gerekçesiyle reddetme, bilgiyi doğrudan ver.
 3. Notlarda tam yoksa benzerini belirt, kesinlikle uydurma.
 """
-    # 1. Önce Gemini ile yanıt üret
+    # 1. Önce Groq LPU ile yıldırım hızında cevap üret (0.3 saniye)
+    if groq_client:
+        for model_name in ["qwen/qwen3.8-27b", "openai/gpt-oss-120b"]:
+            try:
+                response = groq_client.chat.completions.create(
+                    model=model_name,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.2,
+                )
+                text_ans = response.choices[0].message.content.strip()
+                if text_ans and "I'm sorry" not in text_ans and "cannot help" not in text_ans:
+                    return text_ans
+            except Exception:
+                continue
+
+    # 2. Eğer Groq sansüre takılırsa veya hata verirse Gemini Flash ile üret
     if genai_client:
-        models_to_try = ["gemini-3.8-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+        models_to_try = ["gemini-3.8-flash", "gemini-2.0-flash", "gemini-2.5-flash"]
         for m in models_to_try:
             try:
                 resp = genai_client.models.generate_content(
@@ -192,16 +209,4 @@ GÖREVİN:
             except Exception:
                 continue
 
-    # 2. Groq ile dene
-    if groq_client:
-        try:
-            response = groq_client.chat.completions.create(
-                model="openai/gpt-oss-120b",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.2,
-            )
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            return f"Cevap üretilirken bir sorun oluştu: {e}"
-
-    return "Yapay zeka servislerine erişilemedi."
+    return "Hafızada ilgili kayıt bulundu ancak cevap oluşturulamadı."
