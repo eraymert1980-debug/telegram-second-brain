@@ -9,13 +9,14 @@ from dotenv import load_dotenv
 # Ortam değişkenlerini yükle (.env dosyası varsa)
 load_dotenv()
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.request import HTTPXRequest
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
@@ -119,6 +120,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "**Faydalı Komutlar:**\n"
         "/notlar - Son kaydettiğin notlar\n"
         "/hatirlaticilar - Bekleyen aktif hatırlatıcıların\n"
+        "/iptal - Hatırlatıcı iptal et (veya /iptal <id>)\n"
         "/yedek - Hafıza veritabanının yedeğini indir\n"
     )
     await update.message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN)
@@ -144,10 +146,79 @@ async def reminders_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not reminders:
         await update.message.reply_text("Bekleyen aktif bir hatırlatıcın bulunmuyor.")
         return
-    text = "⏰ **Bekleyen Hatırlatıcıların:**\n\n"
+        
+    text = "⏰ **Bekleyen Aktif Hatırlatıcıların:**\n\n"
+    keyboard = []
     for r in reminders:
-        text += f"🔔 *Zaman:* {r['remind_at']}\n📌 *Görev:* {r['content']}\n\n"
-    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        text += f"🔔 *[#{r['id']}]* {r['remind_at']}\n📌 {r['content']}\n\n"
+        keyboard.append([
+            InlineKeyboardButton(f"❌ İptal Et: #{r['id']} ({r['remind_at'][:16]})", callback_data=f"cancel_rem_{r['id']}")
+        ])
+        
+    await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/iptal veya /iptal <id> komutuyla hatırlatıcı iptal etme."""
+    if not await check_auth(update):
+        return
+    user_id = update.effective_user.id
+    
+    # Doğrudan numara girilmiş mi kontrol et: /iptal 2 veya /iptal #2
+    if context.args and len(context.args) > 0:
+        arg = context.args[0].replace("#", "")
+        if arg.isdigit():
+            rem_id = int(arg)
+            if db.cancel_reminder(user_id, rem_id):
+                await update.message.reply_text(f"✅ **#{rem_id} numaralı hatırlatıcı iptal edildi.**", parse_mode=ParseMode.MARKDOWN)
+                return
+            else:
+                await update.message.reply_text(f"⚠️ #{rem_id} ID'li aktif bir hatırlatıcı bulunamadı.")
+                return
+
+    # Argüman yoksa bekleyen aktif hatırlatıcıları buton olarak listele
+    reminders = db.get_active_reminders(user_id)
+    if not reminders:
+        await update.message.reply_text("İptal edilecek bekleyen aktif bir hatırlatıcın bulunmuyor.")
+        return
+
+    text = "🗑️ **Hangi hatırlatıcıyı iptal etmek istersin?**\nAşağıdaki butonlara tıklayarak anında iptal edebilirsin:\n\n"
+    keyboard = []
+    for r in reminders:
+        text += f"• *#{r['id']}* - {r['remind_at']} - {r['content'][:45]}\n"
+        keyboard.append([
+            InlineKeyboardButton(f"❌ İptal Et: #{r['id']}", callback_data=f"cancel_rem_{r['id']}")
+        ])
+        
+    await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def cancel_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Butona tıklayarak hatırlatıcı iptal etme callback işleyicisi."""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    if not is_authorized(user_id):
+        await query.answer("Yetkisiz işlem!", show_alert=True)
+        return
+        
+    data = query.data
+    if data.startswith("cancel_rem_"):
+        rem_id = int(data.split("_")[-1])
+        if db.cancel_reminder(user_id, rem_id):
+            await query.edit_message_text(
+                f"✅ **#{rem_id} numaralı hatırlatıcı iptal edildi.**\n\nArtık bu hatırlatma için sana bildirim gelmeyecek.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        else:
+            await query.edit_message_text(f"⚠️ #{rem_id} numaralı hatırlatıcı zaten iptal edilmiş veya süresi geçmiş.")
 
 async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update):
@@ -169,14 +240,35 @@ async def process_text_intent(update: Update, text: str, user_id: int):
     if action == "reminder":
         remind_at = parsed.get("remind_at")
         content = parsed.get("content")
-        db.add_reminder(user_id, remind_at, content)
+        rem_id = db.add_reminder(user_id, remind_at, content)
+        keyboard = [
+            [InlineKeyboardButton("❌ Bu Hatırlatmayı İptal Et", callback_data=f"cancel_rem_{rem_id}")]
+        ]
         await update.message.reply_text(
-            f"⏰ **Hatırlatıcı Ayarlandı!**\n\n"
+            f"⏰ **Hatırlatıcı Ayarlandı!** (ID: #{rem_id})\n\n"
             f"📅 **Zaman:** {remind_at}\n"
             f"📌 **Görev:** {content}\n\n"
-            "Vakti geldiğinde sana buradan bildirim atacağım.",
-            parse_mode=ParseMode.MARKDOWN
+            "Vakti geldiğinde sana buradan bildirim atacağım.\n"
+            "*(Vazgeçersen aşağıdaki butona basabilir veya `/iptal {rem_id}` yazabilirsin)*",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
+    elif action == "cancel_reminder":
+        last_rem = db.get_last_active_reminder(user_id)
+        if not last_rem:
+            await update.message.reply_text("İptal edilecek bekleyen aktif bir hatırlatıcın bulunmuyor.")
+        else:
+            keyboard = [
+                [InlineKeyboardButton(f"❌ #{last_rem['id']} Numaralıyı İptal Et", callback_data=f"cancel_rem_{last_rem['id']}")],
+            ]
+            await update.message.reply_text(
+                f"Son bekleyen aktif hatırlatıcın:\n\n"
+                f"🔔 **#{last_rem['id']} - {last_rem['remind_at']}**\n"
+                f"📌 {last_rem['content']}\n\n"
+                f"Bunu iptal etmek istiyor musun?",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
     elif action == "query":
         search_keywords = parsed.get("search_keywords", text)
         notes = db.search_notes(user_id, search_keywords, limit=5)
@@ -286,12 +378,17 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     remind_at = parsed_cap.get("remind_at")
                     first_lines = "\n".join(analysis.split("\n")[:4])
                     reminder_content = f"Görseldeki Notlar: {first_lines}"
-                    db.add_reminder(user_id, remind_at, reminder_content)
+                    rem_id = db.add_reminder(user_id, remind_at, reminder_content)
+                    keyboard = [
+                        [InlineKeyboardButton("❌ Bu Hatırlatmayı İptal Et", callback_data=f"cancel_rem_{rem_id}")]
+                    ]
                     await update.message.reply_text(
-                        f"⏰ **Hatırlatıcı da Ayarlandı!**\n\n"
+                        f"⏰ **Hatırlatıcı da Ayarlandı!** (ID: #{rem_id})\n\n"
                         f"📅 **Zaman:** {remind_at}\n"
-                        f"📌 **Görev:** Bu fotoğraftaki notlar sana zamanında hatırlatılacak.",
-                        parse_mode=ParseMode.MARKDOWN
+                        f"📌 **Görev:** Bu fotoğraftaki notlar sana zamanında hatırlatılacak.\n"
+                        "*(Vazgeçersen aşağıdaki butona basabilir veya `/iptal` yazabilirsin)*",
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=InlineKeyboardMarkup(keyboard)
                     )
             except Exception as cap_err:
                 logger.error(f"Fotoğraf açıklaması işlenirken hata: {cap_err}")
@@ -348,7 +445,9 @@ async def run_webhook_mode(req: HTTPXRequest, render_url: str):
     ptb_app.add_handler(CommandHandler("start", start_cmd))
     ptb_app.add_handler(CommandHandler("notlar", notes_cmd))
     ptb_app.add_handler(CommandHandler("hatirlaticilar", reminders_cmd))
+    ptb_app.add_handler(CommandHandler("iptal", cancel_cmd))
     ptb_app.add_handler(CommandHandler("yedek", backup_cmd))
+    ptb_app.add_handler(CallbackQueryHandler(cancel_callback_handler))
     
     ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     ptb_app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
@@ -408,7 +507,9 @@ def run_polling_mode(req: HTTPXRequest):
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("notlar", notes_cmd))
     app.add_handler(CommandHandler("hatirlaticilar", reminders_cmd))
+    app.add_handler(CommandHandler("iptal", cancel_cmd))
     app.add_handler(CommandHandler("yedek", backup_cmd))
+    app.add_handler(CallbackQueryHandler(cancel_callback_handler))
     
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))

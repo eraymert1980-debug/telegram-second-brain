@@ -109,7 +109,12 @@ Kullanıcıdan gelen mesajı analiz et ve SADECE geçerli bir JSON objesi dönd�
     "question": "kullanıcının orijinal sorusu"
 }}
 
-3. Eğer kullanıcı yeni bir bilgi veya not kaydediyorsa:
+3. Eğer kullanıcı bir hatırlatıcıyı iptal etmek veya silmek istiyorsa (Örn: "hatırlatmayı iptal et", "son hatırlatmayı sil", "vazgeçtim hatırlatma"):
+{{
+    "action": "cancel_reminder"
+}}
+
+4. Eğer kullanıcı yeni bir bilgi veya not kaydediyorsa:
 {{
     "action": "note",
     "summary": "Tek cümlelik hafıza özeti",
@@ -137,7 +142,7 @@ Kullanıcıdan gelen mesajı analiz et ve SADECE geçerli bir JSON objesi dönd�
 
     # 2. Groq meşgulse Gemini ile dene (Yedek)
     if genai_client:
-        models_to_try = ["gemini-3.8-flash", "gemini-2.0-flash", "gemini-2.5-flash"]
+        models_to_try = ["gemini-3.8-flash", "gemini-flash-latest", "gemini-2.0-flash-001", "gemini-2.0-flash"]
         for m in models_to_try:
             try:
                 resp = genai_client.models.generate_content(
@@ -154,6 +159,8 @@ Kullanıcıdan gelen mesajı analiz et ve SADECE geçerli bir JSON objesi dönd�
     lower_text = text.lower()
     if any(q in lower_text for q in ["neydi", "kaçtı", "nerede", "kimdi", "ne zaman", "hangisi", "?"]):
         return {"action": "query", "search_keywords": text, "question": text}
+    elif any(w in lower_text for w in ["iptal", "vazgeç", "sil"]) and any(w in lower_text for w in ["hatırlat", "alarm"]):
+        return {"action": "cancel_reminder"}
     elif any(r in lower_text for r in ["hatırlat", "alarm", "sonra", "yarın", "saat"]):
         return {"action": "reminder", "remind_at": current_time.strftime("%Y-%m-%d %H:%M:00"), "content": text}
     else:
@@ -198,7 +205,7 @@ GÖREVİN:
 
     # 2. Eğer Groq sansüre takılırsa veya hata verirse Gemini Flash ile üret
     if genai_client:
-        models_to_try = ["gemini-3.8-flash", "gemini-2.0-flash", "gemini-2.5-flash"]
+        models_to_try = ["gemini-3.8-flash", "gemini-flash-latest", "gemini-2.0-flash-001", "gemini-2.0-flash"]
         for m in models_to_try:
             try:
                 resp = genai_client.models.generate_content(

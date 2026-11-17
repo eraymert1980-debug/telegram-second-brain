@@ -168,6 +168,31 @@ def mark_reminder_completed(reminder_id: int):
     conn.commit()
     conn.close()
 
+def cancel_reminder(user_id: int, reminder_id: int) -> bool:
+    """Hatırlatıcıyı kullanıcı isteğiyle iptal eder (is_completed = 2)."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE reminders SET is_completed = 2 WHERE id = ? AND user_id = ?",
+        (reminder_id, user_id)
+    )
+    affected = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return affected
+
+def get_last_active_reminder(user_id: int):
+    """En son eklenen bekleyen aktif hatırlatıcıyı getirir."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, remind_at, content FROM reminders WHERE user_id = ? AND is_completed = 0 ORDER BY id DESC LIMIT 1",
+        (user_id,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
 def get_active_reminders(user_id: int):
     conn = get_connection()
     cursor = conn.cursor()
