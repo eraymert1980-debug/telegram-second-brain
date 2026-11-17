@@ -102,6 +102,30 @@ async def download_telegram_file(bot, file_id: str, dest_path: str):
     
     logger.info(f"Dosya başarıyla indirildi: {dest_path} ({os.path.getsize(dest_path)} bytes)")
 
+async def safe_edit_text(msg, text: str, parse_mode=ParseMode.MARKDOWN, reply_markup=None):
+    """Markdown parse hatası verirse (özel karakterler, MRZ kodları vs.) otomatik düz metne düşer."""
+    try:
+        return await msg.edit_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+    except Exception as e:
+        logger.warning(f"Markdown edit hatası, düz metin deneniyor: {e}")
+        try:
+            return await msg.edit_text(text, parse_mode=None, reply_markup=reply_markup)
+        except Exception as e2:
+            logger.error(f"Mesaj düzenleme tamamen başarısız: {e2}")
+            return None
+
+async def safe_reply_text(update: Update, text: str, parse_mode=ParseMode.MARKDOWN, reply_markup=None):
+    """Markdown parse hatası verirse otomatik düz metne düşer."""
+    try:
+        return await update.message.reply_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+    except Exception as e:
+        logger.warning(f"Markdown reply hatası, düz metin deneniyor: {e}")
+        try:
+            return await update.message.reply_text(text, parse_mode=None, reply_markup=reply_markup)
+        except Exception as e2:
+            logger.error(f"Mesaj yanıtlama tamamen başarısız: {e2}")
+            return None
+
 # --- Komutlar ---
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"/start komutu: Kullanıcı {update.effective_user.id} ({update.effective_user.username})")
@@ -245,9 +269,9 @@ async def edit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("⏳ Not akıllıca güncelleniyor...")
     updated_content = ai_engine.correct_note_content(last_note["content"], instruction)
     db.update_note(user_id, last_note["id"], updated_content)
-    await status_msg.edit_text(
-        f"✏️ **Not Başarıyla Güncellendi!** (ID: #{last_note['id']})\n\n{updated_content}",
-        parse_mode=ParseMode.MARKDOWN
+    await safe_edit_text(
+        status_msg,
+        f"✏️ **Not Başarıyla Güncellendi!** (ID: #{last_note['id']})\n\n{updated_content}"
     )
 
 async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -308,9 +332,9 @@ async def process_text_intent(update: Update, text: str, user_id: int):
         instruction = parsed.get("instruction", text)
         updated_content = ai_engine.correct_note_content(last_note["content"], instruction)
         db.update_note(user_id, last_note["id"], updated_content)
-        await status_msg.edit_text(
-            f"✏️ **Hafızadaki Not Güncellendi!** (ID: #{last_note['id']})\n\n{updated_content}",
-            parse_mode=ParseMode.MARKDOWN
+        await safe_edit_text(
+            status_msg,
+            f"✏️ **Hafızadaki Not Güncellendi!** (ID: #{last_note['id']})\n\n{updated_content}"
         )
     elif action == "query":
         search_keywords = parsed.get("search_keywords", text)
@@ -425,9 +449,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         analysis = ai_engine.analyze_image(opt_img_path, caption)
         db.add_note(user_id, "photo", analysis, summary=analysis[:100], tags="görsel,fotoğraf")
         
-        await status_msg.edit_text(
-            f"📷 **Görsel İncelendi ve Hafızaya Eklendi!**\n\n{analysis}",
-            parse_mode=ParseMode.MARKDOWN
+        await safe_edit_text(
+            status_msg,
+            f"📷 **Görsel İncelendi ve Hafızaya Eklendi!**\n\n{analysis}"
         )
         
         # Eğer fotoğrafın altında bir hatırlatma/istek yazıyorsa onu da işle!
@@ -507,9 +531,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.add_note(user_id, "document", analysis, summary=f"{file_name}: {analysis[:100]}", tags="belge,pdf,kimlik" if is_pdf else "görsel,belge")
         
         icon = "📄" if is_pdf else "📷"
-        await status_msg.edit_text(
-            f"{icon} **Belge İncelendi ve Hafızaya Eklendi!**\n\n{analysis}",
-            parse_mode=ParseMode.MARKDOWN
+        await safe_edit_text(
+            status_msg,
+            f"{icon} **Belge İncelendi ve Hafızaya Eklendi!**\n\n{analysis}"
         )
         
         if caption:
