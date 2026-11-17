@@ -240,6 +240,24 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📷 **Görsel İncelendi ve Hafızaya Eklendi!**\n\n{analysis}",
             parse_mode=ParseMode.MARKDOWN
         )
+        
+        # Eğer fotoğrafın altında bir hatırlatma/istek yazıyorsa onu da işle!
+        if caption:
+            try:
+                parsed_cap = ai_engine.classify_and_parse(caption)
+                if parsed_cap.get("action") == "reminder":
+                    remind_at = parsed_cap.get("remind_at")
+                    first_lines = "\n".join(analysis.split("\n")[:4])
+                    reminder_content = f"Görseldeki Notlar: {first_lines}"
+                    db.add_reminder(user_id, remind_at, reminder_content)
+                    await update.message.reply_text(
+                        f"⏰ **Hatırlatıcı da Ayarlandı!**\n\n"
+                        f"📅 **Zaman:** {remind_at}\n"
+                        f"📌 **Görev:** Bu fotoğraftaki notlar sana zamanında hatırlatılacak.",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+            except Exception as cap_err:
+                logger.error(f"Fotoğraf açıklaması işlenirken hata: {cap_err}")
     except Exception as e:
         logger.error(f"Görsel hatası: {e}", exc_info=True)
         try:
