@@ -32,32 +32,42 @@ def transcribe_audio(audio_path: str) -> str:
         )
     return str(transcription).strip()
 
-def analyze_image(image_path: str, caption: str = "") -> str:
-    """Görseli ultra hızlı Gemini Vision modelleri ile analiz eder."""
+def analyze_media(file_path: str, mime_type: str = "image/jpeg", caption: str = "") -> str:
+    """Görsel veya PDF belgesini ultra hızlı Gemini Vision modelleri ile analiz eder."""
     if not genai_client:
-        fallback_desc = "Fotoğraf kaydedildi."
+        fallback_desc = f"Dosya ({mime_type}) kaydedildi."
         if caption:
             fallback_desc += f" Kullanıcı notu: {caption}"
         return fallback_desc
 
     from google.genai import types
 
-    # Hız Optimizasyonu: Dolgu cümlelerini engelle, doğrudan net bilgileri maddeler halinde çıkar
-    prompt = (
-        "Görseldeki önemli bilgileri kompakt, net ve doğrudan maddeler halinde çıkar:\n"
-        "- Belge/Defter/Fiş varsa: Tüm başlıkları, el yazılarını, isimleri ve numaraları madde madde listele.\n"
-        "- Eşya/Konum varsa: Eşyanın nerede olduğunu net olarak belirt.\n"
-        "Gereksiz ortam tasviri veya süslemeler yapma, doğrudan hafızaya alınacak gerçek bilgileri yaz."
-    )
+    is_pdf = (mime_type == "application/pdf")
+    if is_pdf:
+        prompt = (
+            "Bu PDF belgesini (taranmış kimlik, pasaport, ehliyet, fatura, sözleşme veya resmi evrak) kişisel bir hafıza asistanı olarak ayrıntılı incele:\n"
+            "- Belge tipini belirt (Örn: T.C. Kimlik Kartı, Sürücü Belgesi, Fatura vb.).\n"
+            "- İsim, soyisim, T.C. kimlik numarası, doğum tarihi, seri no, veriliş tarihi gibi tüm kimlik ve belge bilgilerini eksiksiz madde madde listele.\n"
+            "- Varsa adres, tutar, son geçerlilik tarihi ve barkod/karekod altındaki kodları da ekle.\n"
+            "Gereksiz ortam tasviri veya süsleme yapma, doğrudan hafızaya alınacak gerçek bilgileri net ve aranabilir şekilde yaz."
+        )
+    else:
+        # Hız Optimizasyonu: Dolgu cümlelerini engelle, doğrudan net bilgileri maddeler halinde çıkar
+        prompt = (
+            "Görseldeki önemli bilgileri kompakt, net ve doğrudan maddeler halinde çıkar:\n"
+            "- Belge/Defter/Fiş varsa: Tüm başlıkları, el yazılarını, isimleri ve numaraları madde madde listele.\n"
+            "- Eşya/Konum varsa: Eşyanın nerede olduğunu net olarak belirt.\n"
+            "Gereksiz ortam tasviri veya süslemeler yapma, doğrudan hafızaya alınacak gerçek bilgileri yaz."
+        )
     if caption:
-        prompt += f"\nKullanıcının bu fotoğrafa eklediği not: '{caption}'"
+        prompt += f"\nKullanıcının bu belgeye/fotoğrafa eklediği not: '{caption}'"
 
-    with open(image_path, "rb") as img_file:
-        image_bytes = img_file.read()
+    with open(file_path, "rb") as f:
+        file_bytes = f.read()
 
-    part = types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
+    part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
 
-    # Sadece yeni ve aktif modelleri dene (eski 1.5 ve 2.5 modelleri Google tarafından kapatıldı)
+    # Sadece yeni ve aktif modelleri dene
     models_to_try = ["gemini-3.8-flash", "gemini-flash-latest", "gemini-2.0-flash-001", "gemini-2.0-flash"]
     errors = []
 
@@ -74,6 +84,10 @@ def analyze_image(image_path: str, caption: str = "") -> str:
             continue
 
     raise RuntimeError(" | ".join(errors))
+
+def analyze_image(image_path: str, caption: str = "") -> str:
+    """Geriye dönük uyumluluk için görsel analiz wrapper'ı."""
+    return analyze_media(image_path, mime_type="image/jpeg", caption=caption)
 
 def classify_and_parse(text: str, current_time: datetime = None) -> dict:
     """

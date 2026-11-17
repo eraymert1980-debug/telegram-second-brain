@@ -114,6 +114,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "**Neler Yapabilirim?**\n"
         "• 🎙️ **Sesli Not:** Ses kaydı at; anında deşifre edip ister not alayım, ister hatırlatıcı kurayım.\n"
         "• 📷 **Fotoğraf/Belge:** Anahtarı nereye koyduğunu, fişleri, kartları fotoğrafla; hafızaya alayım.\n"
+        "• 📄 **PDF / Taranmış Evrak:** Kamera ile taranmış kimlik, pasaport veya PDF dökümanları at; tüm maddeleri okuyayım.\n"
         "• ✍️ **Yazılı Not:** 'KuveytTürk müşteri no: 123456' gibi bilgileri bana fırlat.\n"
         "• 🔔 **Akıllı Hatırlatma:** 'Salı 14:00'te şunu hatırlat' veya 'Yarın sabah ilacı iç' de, vakti gelince bildireyim.\n"
         "• 🔍 **Sorgulama:** 'Anahtarı nereye saklamıştım?', 'Müşteri numaram neydi?' diye sor, hemen bulup söyleyeyim.\n\n"
@@ -446,6 +447,86 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if opt_img_path and os.path.exists(opt_img_path) and opt_img_path != temp_img_path:
             os.remove(opt_img_path)
 
+# --- Belge / PDF İşleyici ---
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_auth(update):
+        return
+    user_id = update.effective_user.id
+    doc = update.message.document
+    caption = update.message.caption or ""
+    
+    file_name = doc.file_name or "belge"
+    mime_type = doc.mime_type or "application/octet-stream"
+    file_size = doc.file_size or 0
+    
+    # 20MB sınır
+    if file_size > 20 * 1024 * 1024:
+        await update.message.reply_text("⚠️ Dosya boyutu 20MB'tan büyük olamaz.")
+        return
+
+    is_pdf = mime_type == "application/pdf" or file_name.lower().endswith(".pdf")
+    is_image = mime_type.startswith("image/") or any(file_name.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".webp"])
+    
+    if not (is_pdf or is_image):
+        await update.message.reply_text(f"📄 '{file_name}' dosyası alındı. Şu an için sadece PDF dökümanları (taranmış kimlik, fatura vb.) ve fotoğrafları analiz edebiliyorum.")
+        return
+
+    status_msg = await update.message.reply_text(f"⏳ {'PDF belgesi' if is_pdf else 'Görsel'} alınıyor ve inceleniyor...")
+    
+    temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp")
+    os.makedirs(temp_dir, exist_ok=True)
+    temp_path = None
+    
+    try:
+        ext = ".pdf" if is_pdf else ".jpg"
+        temp_path = os.path.join(temp_dir, f"doc_{doc.file_id}{ext}")
+        await download_telegram_file(context.bot, doc.file_id, temp_path)
+        
+        await status_msg.edit_text("⏳ Belge yapay zeka ile taranıyor ve tüm detayları çözümleniyor...")
+        
+        doc_mime = "application/pdf" if is_pdf else "image/jpeg"
+        analysis = ai_engine.analyze_media(temp_path, mime_type=doc_mime, caption=caption)
+        
+        db.add_note(user_id, "document", analysis, summary=f"{file_name}: {analysis[:100]}", tags="belge,pdf,kimlik" if is_pdf else "görsel,belge")
+        
+        icon = "📄" if is_pdf else "📷"
+        await status_msg.edit_text(
+            f"{icon} **Belge İncelendi ve Hafızaya Eklendi!**\n\n{analysis}",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+        if caption:
+            try:
+                parsed_cap = ai_engine.classify_and_parse(caption)
+                if parsed_cap.get("action") == "reminder":
+                    remind_at = parsed_cap.get("remind_at")
+                    first_lines = "\n".join(analysis.split("\n")[:4])
+                    reminder_content = f"Belgedeki Notlar ({file_name}): {first_lines}"
+                    rem_id = db.add_reminder(user_id, remind_at, reminder_content)
+                    keyboard = [
+                        [InlineKeyboardButton("❌ Bu Hatırlatmayı İptal Et", callback_data=f"cancel_rem_{rem_id}")]
+                    ]
+                    await update.message.reply_text(
+                        f"⏰ **Hatırlatıcı da Ayarlandı!** (ID: #{rem_id})\n\n"
+                        f"📅 **Zaman:** {remind_at}\n"
+                        f"📌 **Görev:** Bu belgedeki bilgiler sana zamanında hatırlatılacak.\n"
+                        "*(Vazgeçersen aşağıdaki butona basabilir veya `/iptal` yazabilirsin)*",
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=InlineKeyboardMarkup(keyboard)
+                    )
+            except Exception as cap_err:
+                logger.error(f"Belge açıklaması hatırlatıcı hatası: {cap_err}")
+                
+    except Exception as e:
+        logger.error(f"Belge analiz hatası: {e}", exc_info=True)
+        try:
+            await status_msg.edit_text(f"⚠️ Belge analiz hatası [{type(e).__name__}]: {e}")
+        except Exception:
+            await update.message.reply_text(f"⚠️ Belge analiz hatası [{type(e).__name__}]: {e}")
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
+
 # --- Hatırlatıcı Kontrolcüsü ---
 async def reminder_checker_job(context: ContextTypes.DEFAULT_TYPE):
     due_items = db.get_due_reminders()
@@ -495,6 +576,7 @@ async def run_webhook_mode(req: HTTPXRequest, render_url: str):
     ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     ptb_app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     ptb_app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    ptb_app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     
     async with ptb_app:
         await ptb_app.start()
@@ -558,6 +640,7 @@ def run_polling_mode(req: HTTPXRequest):
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     
     print("🚀 Telegram Second Brain Botu yerel Polling ile dinliyor...")
     app.run_polling(drop_pending_updates=True)
