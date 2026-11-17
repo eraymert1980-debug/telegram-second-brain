@@ -57,9 +57,9 @@ def analyze_image(image_path: str, caption: str = "") -> str:
 
     part = types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
 
-    # En hızlıdan başlayarak dene: gemini-2.0-flash en düşük gecikmeye sahiptir
-    models_to_try = ["gemini-2.0-flash", "gemini-3.8-flash", "gemini-2.5-flash"]
-    last_err = None
+    # Sadece yeni ve aktif modelleri dene (eski 1.5 ve 2.5 modelleri Google tarafından kapatıldı)
+    models_to_try = ["gemini-3.8-flash", "gemini-flash-latest", "gemini-2.0-flash-001", "gemini-2.0-flash"]
+    errors = []
 
     for m in models_to_try:
         try:
@@ -70,10 +70,10 @@ def analyze_image(image_path: str, caption: str = "") -> str:
             if response and response.text:
                 return response.text.strip()
         except Exception as e:
-            last_err = e
+            errors.append(f"{m}: {e}")
             continue
 
-    raise last_err
+    raise RuntimeError(" | ".join(errors))
 
 def classify_and_parse(text: str, current_time: datetime = None) -> dict:
     """
