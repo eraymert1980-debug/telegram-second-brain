@@ -33,35 +33,43 @@ def transcribe_audio(audio_path: str) -> str:
     return str(transcription).strip()
 
 def analyze_image(image_path: str, caption: str = "") -> str:
-    """Görseli analiz eder (Gemini Client varsa Gemini 2.5 Flash ile)."""
-    if genai_client:
-        prompt = (
-            "Bu görseli bir kişisel hafıza ve not alma asistanı olarak incele. "
-            "Görseldeki önemli nesneleri, eşyaların yerlerini, yazıları/kart numaralarını veya belgeleri "
-            "ayrıntılı, net ve aranabilir bir Türkçe ile açıkla. "
-            "Örnek: 'Mavi anahtarlık antredeki konsolun sol çekmecesine konulmuş.' "
-            "veya 'KuveytTürk hesap cüzdanı: Müşteri no: 123456, IBAN: TR...'"
-        )
-        if caption:
-            prompt += f"\nKullanıcının görselle birlikte ilettiği not: '{caption}'"
-
-        with open(image_path, "rb") as img_file:
-            image_bytes = img_file.read()
-
-        response = genai_client.models.generate_content(
-            model='gemini-3.8-flash',
-            contents=[
-                genai.types.Part.from_bytes(data=image_bytes, mime_type='image/jpeg'),
-                prompt
-            ]
-        )
-        return response.text.strip()
-    else:
-        # Eğer henüz Gemini API key tanımlanmadıysa fallback
+    """Görseli Gemini Vision modelleri ile analiz eder."""
+    if not genai_client:
         fallback_desc = "Fotoğraf kaydedildi."
         if caption:
             fallback_desc += f" Kullanıcı notu: {caption}"
         return fallback_desc
+
+    from PIL import Image
+    image = Image.open(image_path)
+
+    prompt = (
+        "Bu görseli bir kişisel hafıza ve not alma asistanı olarak incele. "
+        "Görseldeki önemli nesneleri, eşyaların yerlerini, yazıları/kart numaralarını veya belgeleri "
+        "ayrıntılı, net ve aranabilir bir Türkçe ile açıkla. "
+        "Örnek: 'Mavi anahtarlık antredeki konsolun sol çekmecesine konulmuş.' "
+        "veya 'İstanbul Üniversitesi Öğrenci Kimlik Kartı: Adı: Eray Mert, Öğrenci No: 4129200106, TC: 20471308184...'"
+    )
+    if caption:
+        prompt += f"\nKullanıcının görselle birlikte ilettiği not: '{caption}'"
+
+    # Hata durumunda sırayla aktif modelleri dene
+    models_to_try = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+    last_err = None
+
+    for model_name in models_to_try:
+        try:
+            response = genai_client.models.generate_content(
+                model=model_name,
+                contents=[image, prompt]
+            )
+            if response and response.text:
+                return response.text.strip()
+        except Exception as e:
+            last_err = e
+            continue
+
+    raise last_err
 
 def classify_and_parse(text: str, current_time: datetime = None) -> dict:
     """
