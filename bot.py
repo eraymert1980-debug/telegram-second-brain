@@ -121,6 +121,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/notlar - Son kaydettiğin notlar\n"
         "/hatirlaticilar - Bekleyen aktif hatırlatıcıların\n"
         "/iptal - Hatırlatıcı iptal et (veya /iptal <id>)\n"
+        "/duzelt - Son nottaki yanlış yeri düzelt (örn: /duzelt Roptürk yerine Koptur)\n"
         "/yedek - Hafıza veritabanının yedeğini indir\n"
     )
     await update.message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN)
@@ -220,6 +221,34 @@ async def cancel_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         else:
             await query.edit_message_text(f"⚠️ #{rem_id} numaralı hatırlatıcı zaten iptal edilmiş veya süresi geçmiş.")
 
+async def edit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/duzelt komutu ile son nottaki hatayı düzeltme."""
+    if not await check_auth(update):
+        return
+    user_id = update.effective_user.id
+    last_note = db.get_last_note(user_id)
+    if not last_note:
+        await update.message.reply_text("Düzeltilecek kayıtlı bir notun bulunmuyor.")
+        return
+        
+    instruction = " ".join(context.args) if context.args else ""
+    if not instruction:
+        await update.message.reply_text(
+            f"📌 **Hafızadaki Son Notun (ID: #{last_note['id']}):**\n\n{last_note['content']}\n\n"
+            "Bu nottaki hatayı düzeltmek için örneğin:\n"
+            "`/duzelt Roptürk yerine Koptur faturası olacak` yazabilirsin.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+        
+    status_msg = await update.message.reply_text("⏳ Not akıllıca güncelleniyor...")
+    updated_content = ai_engine.correct_note_content(last_note["content"], instruction)
+    db.update_note(user_id, last_note["id"], updated_content)
+    await status_msg.edit_text(
+        f"✏️ **Not Başarıyla Güncellendi!** (ID: #{last_note['id']})\n\n{updated_content}",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
 async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update):
         return
@@ -269,6 +298,19 @@ async def process_text_intent(update: Update, text: str, user_id: int):
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
+    elif action == "correction":
+        last_note = db.get_last_note(user_id)
+        if not last_note:
+            await update.message.reply_text("Düzeltilecek kayıtlı bir notun bulunmuyor.")
+            return
+        status_msg = await update.message.reply_text("⏳ Not akıllıca güncelleniyor...")
+        instruction = parsed.get("instruction", text)
+        updated_content = ai_engine.correct_note_content(last_note["content"], instruction)
+        db.update_note(user_id, last_note["id"], updated_content)
+        await status_msg.edit_text(
+            f"✏️ **Hafızadaki Not Güncellendi!** (ID: #{last_note['id']})\n\n{updated_content}",
+            parse_mode=ParseMode.MARKDOWN
+        )
     elif action == "query":
         search_keywords = parsed.get("search_keywords", text)
         notes = db.search_notes(user_id, search_keywords, limit=5)
@@ -357,8 +399,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await download_telegram_file(context.bot, photo.file_id, temp_img_path)
         
-        # Hızlandırma Optimizasyonu: Görseli 1600px'e ve hafif JPEG'e dönüştür (Transfer 6 kat hızlanır)
-        opt_img_path = optimize_image(temp_img_path, max_dimension=1600)
+        # Hızlandırma Optimizasyonu: Görseli 1280px'e ve optimize JPEG'e dönüştür (Transfer ve analiz süresi hızlanır)
+        opt_img_path = optimize_image(temp_img_path, max_dimension=1280)
         
         await status_msg.edit_text("⏳ Fotoğraf yapay zeka ile analiz ediliyor...")
         
@@ -446,6 +488,7 @@ async def run_webhook_mode(req: HTTPXRequest, render_url: str):
     ptb_app.add_handler(CommandHandler("notlar", notes_cmd))
     ptb_app.add_handler(CommandHandler("hatirlaticilar", reminders_cmd))
     ptb_app.add_handler(CommandHandler("iptal", cancel_cmd))
+    ptb_app.add_handler(CommandHandler("duzelt", edit_cmd))
     ptb_app.add_handler(CommandHandler("yedek", backup_cmd))
     ptb_app.add_handler(CallbackQueryHandler(cancel_callback_handler))
     
@@ -508,6 +551,7 @@ def run_polling_mode(req: HTTPXRequest):
     app.add_handler(CommandHandler("notlar", notes_cmd))
     app.add_handler(CommandHandler("hatirlaticilar", reminders_cmd))
     app.add_handler(CommandHandler("iptal", cancel_cmd))
+    app.add_handler(CommandHandler("duzelt", edit_cmd))
     app.add_handler(CommandHandler("yedek", backup_cmd))
     app.add_handler(CallbackQueryHandler(cancel_callback_handler))
     

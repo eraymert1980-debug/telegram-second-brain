@@ -114,7 +114,13 @@ Kullanıcıdan gelen mesajı analiz et ve SADECE geçerli bir JSON objesi dönd�
     "action": "cancel_reminder"
 }}
 
-4. Eğer kullanıcı yeni bir bilgi veya not kaydediyorsa:
+4. Eğer kullanıcı son kaydedilen nottaki bir hatayı düzeltmek/güncellemek istiyorsa (Örn: "Roptürk değil Koptur olacak", "Son notu düzelt", "Orası yanlış şu şekilde değiştir"):
+{{
+    "action": "correction",
+    "instruction": "kullanıcının düzeltme talimatı"
+}}
+
+5. Eğer kullanıcı yeni bir bilgi veya not kaydediyorsa:
 {{
     "action": "note",
     "summary": "Tek cümlelik hafıza özeti",
@@ -161,10 +167,43 @@ Kullanıcıdan gelen mesajı analiz et ve SADECE geçerli bir JSON objesi dönd�
         return {"action": "query", "search_keywords": text, "question": text}
     elif any(w in lower_text for w in ["iptal", "vazgeç", "sil"]) and any(w in lower_text for w in ["hatırlat", "alarm"]):
         return {"action": "cancel_reminder"}
+    elif any(w in lower_text for w in ["düzelt", "değil", "yanlış okudun", "şöyle olacak", "olarak değiştir"]):
+        return {"action": "correction", "instruction": text}
     elif any(r in lower_text for r in ["hatırlat", "alarm", "sonra", "yarın", "saat"]):
         return {"action": "reminder", "remind_at": current_time.strftime("%Y-%m-%d %H:%M:00"), "content": text}
     else:
         return {"action": "note", "summary": text, "tags": "genel"}
+
+def correct_note_content(original_content: str, correction_instruction: str) -> str:
+    """
+    Kullanıcının talimatına göre mevcut nottaki yanlış yazılmış/okunmuş yeri akıllıca düzeltir.
+    Örn: 'Roptürk değil Koptur faturası olacak' -> Roptürk yerine Koptur faturası koyar.
+    Ultra hızlı Groq LPU (200 ms) kullanır.
+    """
+    prompt = (
+        "Sen kişisel bir not düzenleyicisisin.\n\n"
+        f"MEVCUT NOT METNİ:\n\"\"\"{original_content}\"\"\"\n\n"
+        f"KULLANICININ DÜZELTME TALEBİ:\n\"{correction_instruction}\"\n\n"
+        "GÖREVİN:\n"
+        "Mevcut not metninde kullanıcının belirttiği düzeltmeyi yap ve SADECE güncellenmiş notun tam halini döndür.\n"
+        "Kurallar:\n"
+        "- Başka hiçbir açıklama, selamlama veya 'İşte güncel not:' gibi fazlalık yazma.\n"
+        "- Sadece güncellenmiş notun kendisini döndür."
+    )
+    if groq_client:
+        for model in ["qwen/qwen3.8-27b", "openai/gpt-oss-120b"]:
+            try:
+                resp = groq_client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.1
+                )
+                res_text = resp.choices[0].message.content.strip()
+                if res_text:
+                    return res_text
+            except Exception:
+                continue
+    return original_content
 
 def answer_query(user_question: str, notes: list) -> str:
     """Bulunan notlara göre kullanıcıya doğal, net ve samimi bir Türkçe yanıt üretir."""

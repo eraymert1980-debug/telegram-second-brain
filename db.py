@@ -215,3 +215,39 @@ def get_recent_notes(user_id: int, limit: int = 10):
     conn.close()
     return rows
 
+def get_last_note(user_id: int):
+    """En son kaydedilen notu getirir."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, content, summary, msg_type, created_at FROM notes WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+        (user_id,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def update_note(user_id: int, note_id: int, new_content: str, new_summary: str = "") -> bool:
+    """Mevcut bir notu günceller ve arama indeksini yeniler."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    if not new_summary:
+        new_summary = new_content[:120]
+    cursor.execute(
+        "UPDATE notes SET content = ?, summary = ? WHERE id = ? AND user_id = ?",
+        (new_content, new_summary, note_id, user_id)
+    )
+    affected = cursor.rowcount > 0
+    if affected:
+        try:
+            cursor.execute("INSERT INTO notes_fts(notes_fts, rowid, content, summary, tags) VALUES('delete', ?, ?, ?, ?)", (note_id, "", "", ""))
+        except Exception:
+            pass
+        try:
+            cursor.execute("INSERT INTO notes_fts(rowid, content, summary, tags) VALUES(?, ?, ?, ?)", (note_id, new_content, new_summary, ""))
+        except Exception:
+            pass
+    conn.commit()
+    conn.close()
+    return affected
+
