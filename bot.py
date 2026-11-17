@@ -446,7 +446,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await status_msg.edit_text("⏳ Fotoğraf yapay zeka ile analiz ediliyor...")
         
-        analysis = ai_engine.analyze_image(opt_img_path, caption)
+        analysis = await asyncio.to_thread(ai_engine.analyze_image, opt_img_path, caption)
         db.add_note(user_id, "photo", analysis, summary=analysis[:100], tags="görsel,fotoğraf")
         
         await safe_edit_text(
@@ -526,7 +526,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text("⏳ Belge yapay zeka ile taranıyor ve tüm detayları çözümleniyor...")
         
         doc_mime = "application/pdf" if is_pdf else "image/jpeg"
-        analysis = ai_engine.analyze_media(temp_path, mime_type=doc_mime, caption=caption)
+        analysis = await asyncio.to_thread(ai_engine.analyze_media, temp_path, doc_mime, caption)
         
         db.add_note(user_id, "document", analysis, summary=f"{file_name}: {analysis[:100]}", tags="belge,pdf,kimlik" if is_pdf else "görsel,belge")
         
