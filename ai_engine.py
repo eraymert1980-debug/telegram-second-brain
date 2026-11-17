@@ -97,10 +97,11 @@ def analyze_media(file_path: str, mime_type: str = "image/jpeg", caption: str = 
                     pil_img = ImageOps.exif_transpose(pil_img)
                     if pil_img.mode in ("RGBA", "P"):
                         pil_img = pil_img.convert("RGB")
-                    pil_img.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
+                    # Hız optimizasyonu: 1024px ve BILINEAR ile CPU'yu kasmadan anında küçült
+                    pil_img.thumbnail((1024, 1024), Image.Resampling.BILINEAR)
 
                     buf = io.BytesIO()
-                    pil_img.save(buf, format="JPEG", quality=82, optimize=True)
+                    pil_img.save(buf, format="JPEG", quality=80, optimize=True)
                     opt_bytes = buf.getvalue()
                     parts_to_send.append(types.Part.from_bytes(data=opt_bytes, mime_type="image/jpeg"))
 
@@ -116,11 +117,11 @@ def analyze_media(file_path: str, mime_type: str = "image/jpeg", caption: str = 
 
     if is_pdf:
         prompt = (
-            "Bu belgeyi (taranmış T.C. Kimlik Kartı, pasaport, ehliyet, fatura veya resmi evrak) kişisel bir hafıza asistanı olarak ayrıntılı incele:\n"
-            "- Belge tipini ve kime ait olduğunu belirt (Örn: T.C. Kimlik Kartı - SAİD KEREM MERT).\n"
-            "- İsim, soyisim, T.C. Kimlik No, Doğum Tarihi, Seri No, Veriliş/Son Geçerlilik Tarihi gibi tüm bilgileri eksiksiz listele.\n"
-            "- Varsa adres, barkod numarası ve arka yüzdeki bilgileri de ekle.\n"
-            "Gereksiz ortam tasviri yapma, doğrudan aranabilir gerçek bilgileri madde madde yaz."
+            "Bu belgedeki (kimlik, pasaport, fatura vb.) önemli bilgileri doğrudan maddeler halinde çıkar:\n"
+            "- Belge Türü ve Kişi Adı Soyadı\n"
+            "- T.C. Kimlik No / Seri No / Doğum Tarihi / Anne-Baba Adı\n"
+            "- Varsa Geçerlilik Tarihi ve Adres\n"
+            "Gereksiz uzun başlıkları, çizgi/bölümleri ve MRZ tekrar kodlarını atla, sadece net bilgileri yaz (kısa ve hızlı yanıt)."
         )
     else:
         # Hız Optimizasyonu: Dolgu cümlelerini engelle, doğrudan net bilgileri maddeler halinde çıkar
@@ -135,6 +136,12 @@ def analyze_media(file_path: str, mime_type: str = "image/jpeg", caption: str = 
 
     contents = parts_to_send + [prompt]
 
+    # Hızlandırma Konfigürasyonu: Thinking gecikmesini sıfırla, kısa ve net token üretimi zorunlu kıl
+    fast_config = types.GenerateContentConfig(
+        thinking_config=types.ThinkingConfig(thinking_budget=0),
+        max_output_tokens=350
+    )
+
     # Sadece güncel ve resmi aktif Gemini 3 modelleri (ve 503 yoğunluk dalgalanması koruması)
     models_to_try = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3-flash-preview"]
     errors = []
@@ -144,7 +151,8 @@ def analyze_media(file_path: str, mime_type: str = "image/jpeg", caption: str = 
             try:
                 response = genai_client.models.generate_content(
                     model=m,
-                    contents=contents
+                    contents=contents,
+                    config=fast_config
                 )
                 if response and response.text:
                     return response.text.strip()
