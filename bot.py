@@ -335,6 +335,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     user_id = update.effective_user.id
     user_text = update.message.text
+    
+    # Kullanıcı eski bir dosyaya (PDF veya Fotoğraf) yanıt verip "bunu işle / oku" dediyse:
+    reply_msg = update.message.reply_to_message
+    if reply_msg and (reply_msg.document or reply_msg.photo):
+        lower_t = user_text.lower()
+        if any(w in lower_t for w in ["işle", "oku", "tara", "al", "kaydet", "analiz", "tekrar", "bu"]):
+            if reply_msg.document:
+                # Belgeyi işle
+                update.message.document = reply_msg.document
+                await handle_document(update, context)
+                return
+            elif reply_msg.photo:
+                # Fotoğrafı işle
+                update.message.photo = reply_msg.photo
+                await handle_photo(update, context)
+                return
+
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     try:
         await process_text_intent(update, user_text, user_id)
