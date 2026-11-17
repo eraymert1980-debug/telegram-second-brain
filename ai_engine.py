@@ -4,9 +4,9 @@ import base64
 from datetime import datetime
 from groq import Groq
 
-# Groq Client
+# Groq Client (Geniş timeout ve otomatik 3 tekrar deneme ile)
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+groq_client = Groq(api_key=GROQ_API_KEY, timeout=90.0, max_retries=3) if GROQ_API_KEY else None
 
 # Gemini Client (opsiyonel görsel ve video için)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")

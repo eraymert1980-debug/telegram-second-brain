@@ -178,9 +178,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         voice = update.message.voice or update.message.audio
-        file = await context.bot.get_file(voice.file_id)
+        file = await context.bot.get_file(voice.file_id, read_timeout=120.0, write_timeout=120.0, connect_timeout=60.0)
         temp_audio_path = os.path.join(temp_dir, f"voice_{voice.file_id}.ogg")
-        await file.download_to_drive(temp_audio_path)
+        await file.download_to_drive(temp_audio_path, read_timeout=120.0, write_timeout=120.0)
         
         # Groq Whisper ile deşifre et
         transcribed_text = ai_engine.transcribe_audio(temp_audio_path)
@@ -211,9 +211,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         photo = update.message.photo[-1]
         caption = update.message.caption or ""
-        file = await context.bot.get_file(photo.file_id)
+        file = await context.bot.get_file(photo.file_id, read_timeout=120.0, write_timeout=120.0, connect_timeout=60.0)
         temp_img_path = os.path.join(temp_dir, f"img_{photo.file_id}.jpg")
-        await file.download_to_drive(temp_img_path)
+        await file.download_to_drive(temp_img_path, read_timeout=120.0, write_timeout=120.0)
         
         analysis = ai_engine.analyze_image(temp_img_path, caption)
         db.add_note(user_id, "photo", analysis, summary=analysis[:100], tags="görsel,fotoğraf")
@@ -283,11 +283,11 @@ def main():
         sys.exit(1)
         
     req = HTTPXRequest(
-        connection_pool_size=10,
-        read_timeout=60.0,
-        write_timeout=60.0,
-        connect_timeout=30.0,
-        pool_timeout=30.0
+        connection_pool_size=20,
+        read_timeout=120.0,
+        write_timeout=120.0,
+        connect_timeout=60.0,
+        pool_timeout=60.0
     )
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).request(req).post_init(post_init).build()
     
