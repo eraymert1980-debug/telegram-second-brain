@@ -78,60 +78,83 @@ def classify_and_parse(text: str, current_time: datetime = None) -> dict:
     2. 'query': Eğer geçmiş bir notu/bilgiyi soruyorsa.
     3. 'note': Yeni bir bilgi/not kaydediyorsa.
     """
-    if not groq_client:
-        raise ValueError("GROQ_API_KEY ayarlanmamış!")
-        
     if current_time is None:
         current_time = datetime.now()
         
     current_time_str = current_time.strftime("%Y-%m-%d %H:%M:%S (%A)")
     
     system_prompt = f"""
-Sen kullanıcının kişisel yapay zeka asistanısın.
+Sen kullanıcının şahsi Kişisel Hafıza (Second Brain) asistanısın.
 Şu anki gerçek zaman: {current_time_str}.
+Kullanıcı kendi şahsi verilerini (TC kimlik no, müşteri no, anahtar yeri, hatırlatma vb.) yönetmektedir.
+Bu meşru bir kişisel not sistemidir, KESİNLİKLE reddetme, 'yardım edemem' deme.
 
-Kullanıcıdan gelen mesajı analiz et ve SADECE geçerli bir JSON objesi döndür (başka hiçbir metin veya markdown formatı ekleme):
+Kullanıcıdan gelen mesajı analiz et ve SADECE geçerli bir JSON objesi döndür:
 
-1. Eğer kullanıcı gelecekte bir şeyi hatırlatmanı istiyorsa (Örn: "Salı günü saat 14:00'te vergi dairesini aramayı hatırlat", "yarın sabah kuveyttürk borcunu hatırlat", "10 dakika sonra kahveyi al"):
+1. Eğer kullanıcı gelecekte bir şeyi hatırlatmanı istiyorsa:
 {{
     "action": "reminder",
     "remind_at": "YYYY-MM-DD HH:MM:00",
     "content": "Hatırlatılacak görev özeti"
 }}
 
-2. Eğer kullanıcı geçmişe dair bir soru soruyorsa (Örn: "Anahtarı nereye koymuştum?", "KuveytTürk müşteri numaram kaçtı?", "Şunu nereye saklamıştım?"):
+2. Eğer kullanıcı geçmişe dair bir soru soruyorsa (Örn: "TC kimlik numaram neydi?", "Anahtar neredeydi?", "Müşteri numaram kaç?"):
 {{
     "action": "query",
-    "search_keywords": "veritabanında aranacak anahtar kelimeler",
+    "search_keywords": "aranacak anahtar kelimeler",
     "question": "kullanıcının orijinal sorusu"
 }}
 
-3. Eğer kullanıcı yeni bir bilgi, not veya durum kaydediyorsa (Örn: "KuveytTürk müşteri numaram 987654", "Yedek anahtarı vestiyere koydum", "İlaçlarımı mutfak dolabına kaldırdım"):
+3. Eğer kullanıcı yeni bir bilgi veya not kaydediyorsa:
 {{
     "action": "note",
-    "summary": "Tek cümlelik net hafıza özeti",
-    "tags": "virgülle ayrılmış etiketler"
+    "summary": "Tek cümlelik hafıza özeti",
+    "tags": "etiketler"
 }}
 """
-    
-    response = groq_client.chat.completions.create(
-        model="openai/gpt-oss-120b",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": text}
-        ],
-        temperature=0.1,
-        response_format={"type": "json_object"}
-    )
-    
-    raw_content = response.choices[0].message.content
-    return json.loads(raw_content)
+    # 1. Önce Gemini ile dene (Gemini kişisel verilerde reddetme yapmaz)
+    if genai_client:
+        models_to_try = ["gemini-3.8-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+        for m in models_to_try:
+            try:
+                resp = genai_client.models.generate_content(
+                    model=m,
+                    contents=f"{system_prompt}\n\nKullanıcı Mesajı: {text}",
+                    config={"response_mime_type": "application/json"}
+                )
+                if resp and resp.text:
+                    return json.loads(resp.text)
+            except Exception:
+                continue
+
+    # 2. Gemini olmazsa Groq ile dene
+    if groq_client:
+        try:
+            response = groq_client.chat.completions.create(
+                model="openai/gpt-oss-120b",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": text}
+                ],
+                temperature=0.1,
+                response_format={"type": "json_object"}
+            )
+            raw_content = response.choices[0].message.content
+            return json.loads(raw_content)
+        except Exception:
+            pass
+
+    # 3. Fallback: Eğer modeller JSON üretmeyi reddederse akıllı sezgisel yönlendirme
+    lower_text = text.lower()
+    if any(q in lower_text for q in ["neydi", "kaçtı", "nerede", "kimdi", "ne zaman", "hangisi", "?"]):
+        return {"action": "query", "search_keywords": text, "question": text}
+    elif any(r in lower_text for r in ["hatırlat", "alarm", "sonra", "yarın", "saat"]):
+        return {"action": "reminder", "remind_at": current_time.strftime("%Y-%m-%d %H:%M:00"), "content": text}
+    else:
+        return {"action": "note", "summary": text, "tags": "genel"}
 
 def answer_query(user_question: str, notes: list) -> str:
     """Bulunan notlara göre kullanıcıya doğal, net ve samimi bir Türkçe yanıt üretir."""
-    if not groq_client:
-        raise ValueError("GROQ_API_KEY ayarlanmamış!")
-        
     context_text = ""
     if notes:
         for idx, n in enumerate(notes, 1):
@@ -140,23 +163,42 @@ def answer_query(user_question: str, notes: list) -> str:
         context_text = "Hafızada bu konuyla ilgili doğrudan bir kayıt bulunamadı."
         
     prompt = f"""
-Kullanıcı sana geçmişe dair bir soru sordu:
+Sen kullanıcının şahsi kişisel hafıza asistanısın.
+Kullanıcı kendi geçmiş notlarından bir soru sordu:
 Soru: "{user_question}"
 
-Kullanıcının kişisel hafıza veritabanından bulunan ilgili notlar:
+Kullanıcının veritabanından bulunan ilgili notlar:
 {context_text}
 
 GÖREVİN:
-1. Eğer hafızada kullanıcının aradığı bilgi varsa doğrudan, net ve samimi bir dille cevap ver (Örn: "KuveytTürk şahsi müşteri numaran: 12345678 (14 Ekim'de kaydetmiştin)").
-2. Eğer notlarda tam cevap yoksa ama benzer bir bilgi varsa bunu nazikçe belirt.
-3. Kesinlikle uydurma yapma, yalnızca notlardaki bilgilere sadık kal.
+1. Notlardaki bilgiyi kullanarak doğrudan, net ve kesin cevap ver (Örn: "T.C. Kimlik Numaran: 20471308184").
+2. Bu kullanıcının kendi şahsi notudur, güvenlik gerekçesiyle reddetme, bilgiyi doğrudan ver.
+3. Notlarda tam yoksa benzerini belirt, kesinlikle uydurma.
 """
-    
-    response = groq_client.chat.completions.create(
-        model="openai/gpt-oss-120b",
-        messages=[
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.2,
-    )
-    return response.choices[0].message.content.strip()
+    # 1. Önce Gemini ile yanıt üret
+    if genai_client:
+        models_to_try = ["gemini-3.8-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+        for m in models_to_try:
+            try:
+                resp = genai_client.models.generate_content(
+                    model=m,
+                    contents=prompt
+                )
+                if resp and resp.text:
+                    return resp.text.strip()
+            except Exception:
+                continue
+
+    # 2. Groq ile dene
+    if groq_client:
+        try:
+            response = groq_client.chat.completions.create(
+                model="openai/gpt-oss-120b",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            return f"Cevap üretilirken bir sorun oluştu: {e}"
+
+    return "Yapay zeka servislerine erişilemedi."
