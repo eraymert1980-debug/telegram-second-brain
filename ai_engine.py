@@ -1,6 +1,7 @@
 import os
 import json
 import base64
+import time
 from datetime import datetime
 from groq import Groq
 
@@ -67,21 +68,26 @@ def analyze_media(file_path: str, mime_type: str = "image/jpeg", caption: str = 
 
     part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
 
-    # Sadece yeni ve aktif modelleri dene
-    models_to_try = ["gemini-3.8-flash", "gemini-flash-latest", "gemini-2.0-flash-001", "gemini-2.0-flash"]
+    # Sadece güncel ve resmi aktif Gemini 3 modelleri (ve 503 yoğunluk dalgalanması koruması)
+    models_to_try = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3-flash-preview"]
     errors = []
 
     for m in models_to_try:
-        try:
-            response = genai_client.models.generate_content(
-                model=m,
-                contents=[part, prompt]
-            )
-            if response and response.text:
-                return response.text.strip()
-        except Exception as e:
-            errors.append(f"{m}: {e}")
-            continue
+        for attempt in range(2):
+            try:
+                response = genai_client.models.generate_content(
+                    model=m,
+                    contents=[part, prompt]
+                )
+                if response and response.text:
+                    return response.text.strip()
+            except Exception as e:
+                err_str = str(e)
+                if ("503" in err_str or "UNAVAILABLE" in err_str) and attempt == 0:
+                    time.sleep(1.5)
+                    continue
+                errors.append(f"{m}: {e}")
+                break
 
     raise RuntimeError(" | ".join(errors))
 
@@ -162,7 +168,7 @@ Kullanıcıdan gelen mesajı analiz et ve SADECE geçerli bir JSON objesi dönd�
 
     # 2. Groq meşgulse Gemini ile dene (Yedek)
     if genai_client:
-        models_to_try = ["gemini-3.8-flash", "gemini-flash-latest", "gemini-2.0-flash-001", "gemini-2.0-flash"]
+        models_to_try = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3-flash-preview"]
         for m in models_to_try:
             try:
                 resp = genai_client.models.generate_content(
@@ -258,7 +264,7 @@ GÖREVİN:
 
     # 2. Eğer Groq sansüre takılırsa veya hata verirse Gemini Flash ile üret
     if genai_client:
-        models_to_try = ["gemini-3.8-flash", "gemini-flash-latest", "gemini-2.0-flash-001", "gemini-2.0-flash"]
+        models_to_try = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3-flash-preview"]
         for m in models_to_try:
             try:
                 resp = genai_client.models.generate_content(
