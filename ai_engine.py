@@ -33,7 +33,7 @@ def transcribe_audio(audio_path: str) -> str:
     return str(transcription).strip()
 
 def analyze_image(image_path: str, caption: str = "") -> str:
-    """Görseli Gemini 3.8 Flash ile analiz eder."""
+    """Görseli ultra hızlı Gemini Vision modelleri ile analiz eder."""
     if not genai_client:
         fallback_desc = "Fotoğraf kaydedildi."
         if caption:
@@ -42,22 +42,23 @@ def analyze_image(image_path: str, caption: str = "") -> str:
 
     from google.genai import types
 
+    # Hız Optimizasyonu: Dolgu cümlelerini engelle, doğrudan net bilgileri maddeler halinde çıkar
     prompt = (
-        "Bu görseli bir kişisel hafıza ve not alma asistanı olarak incele. "
-        "Görseldeki önemli nesneleri, eşyaların yerlerini, yazıları/kart numaralarını, el yazılarını veya belgeleri "
-        "ayrıntılı, net ve aranabilir bir Türkçe ile açıkla. "
-        "Özellikle el yazısı veya defter notu varsa tüm maddeleri tek tek oku ve listele."
+        "Görseldeki önemli bilgileri kompakt, net ve doğrudan maddeler halinde çıkar:\n"
+        "- Belge/Defter/Fiş varsa: Tüm başlıkları, el yazılarını, isimleri ve numaraları madde madde listele.\n"
+        "- Eşya/Konum varsa: Eşyanın nerede olduğunu net olarak belirt.\n"
+        "Gereksiz ortam tasviri veya süslemeler yapma, doğrudan hafızaya alınacak gerçek bilgileri yaz."
     )
     if caption:
-        prompt += f"\nKullanıcının görselle birlikte ilettiği not: '{caption}'"
+        prompt += f"\nKullanıcının bu fotoğrafa eklediği not: '{caption}'"
 
     with open(image_path, "rb") as img_file:
         image_bytes = img_file.read()
 
     part = types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
 
-    # Modelleri types.Part formatıyla dene (6ec491c'de çalışan yöntem)
-    models_to_try = ["gemini-3.8-flash", "gemini-2.0-flash", "gemini-2.5-flash"]
+    # En hızlıdan başlayarak dene: gemini-2.0-flash en düşük gecikmeye sahiptir
+    models_to_try = ["gemini-2.0-flash", "gemini-3.8-flash", "gemini-2.5-flash"]
     last_err = None
 
     for m in models_to_try:
