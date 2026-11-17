@@ -326,30 +326,97 @@ async def reminder_checker_job(context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Hatırlatıcı hatası (ID {reminder_id}): {e}")
 
-# --- Render Web Sunucusu (Uyku Engelleme) ---
+# --- Render Webhook & Web Sunucusu ---
 from aiohttp import web
 
 async def health_check(request):
-    return web.Response(text="Second Brain Bot is running 7/24!")
+    return web.Response(text="Second Brain Bot is running 7/24 on Webhook!")
 
-async def start_web_server():
+async def run_webhook_mode(req: HTTPXRequest, render_url: str):
     port = int(os.environ.get("PORT", 10000))
-    app = web.Application()
-    app.router.add_get("/", health_check)
-    app.router.add_get("/health", health_check)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    logger.info(f"Web sunucusu {port} portunda başlatıldı.")
+    webhook_url = f"{render_url.rstrip('/')}/webhook"
+    
+    ptb_app = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .request(req)
+        .updater(None)
+        .build()
+    )
+    
+    # Handlers
+    ptb_app.add_handler(CommandHandler("start", start_cmd))
+    ptb_app.add_handler(CommandHandler("notlar", notes_cmd))
+    ptb_app.add_handler(CommandHandler("hatirlaticilar", reminders_cmd))
+    ptb_app.add_handler(CommandHandler("yedek", backup_cmd))
+    
+    ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    ptb_app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
+    ptb_app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    
+    async with ptb_app:
+        await ptb_app.start()
+        
+        # Hatırlatıcı JobQueue başlat
+        if ptb_app.job_queue:
+            ptb_app.job_queue.run_repeating(reminder_checker_job, interval=30, first=5)
+            logger.info("Hatırlatıcı job'ı başlatıldı.")
+            
+        server = web.Application()
+        server.router.add_get("/", health_check)
+        server.router.add_get("/health", health_check)
+        
+        async def telegram_webhook_handler(request):
+            try:
+                data = await request.json()
+                update = Update.de_json(data, ptb_app.bot)
+                await ptb_app.update_queue.put(update)
+                return web.Response(status=200)
+            except Exception as e:
+                logger.error(f"Webhook istek hatası: {e}")
+                return web.Response(status=500)
+                
+        server.router.add_post("/webhook", telegram_webhook_handler)
+        
+        # Telegram sunucusuna webhook adresini kaydet
+        await ptb_app.bot.set_webhook(
+            url=webhook_url,
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES
+        )
+        logger.info(f"🎯 Telegram Webhook bağlandı: {webhook_url}")
+        
+        runner = web.AppRunner(server)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", port)
+        await site.start()
+        logger.info(f"🚀 Webhook sunucusu {port} portunda canlı dinliyor!")
+        
+        while True:
+            await asyncio.sleep(3600)
 
-async def post_init(application: Application):
-    if application.job_queue:
-        application.job_queue.run_repeating(reminder_checker_job, interval=30, first=5)
-        logger.info("Hatırlatıcı job'ı başlatıldı.")
-    asyncio.create_task(start_web_server())
+def run_polling_mode(req: HTTPXRequest):
+    logger.info("Yerel Polling modunda başlatılıyor...")
+    
+    async def post_init_local(application: Application):
+        if application.job_queue:
+            application.job_queue.run_repeating(reminder_checker_job, interval=30, first=5)
+            logger.info("Hatırlatıcı job'ı başlatıldı.")
+            
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).request(req).post_init(post_init_local).build()
+    
+    app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(CommandHandler("notlar", notes_cmd))
+    app.add_handler(CommandHandler("hatirlaticilar", reminders_cmd))
+    app.add_handler(CommandHandler("yedek", backup_cmd))
+    
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    
+    print("🚀 Telegram Second Brain Botu yerel Polling ile dinliyor...")
+    app.run_polling(drop_pending_updates=True)
 
-# --- Ana Giriş ---
 def main():
     db.init_db()
     
@@ -364,19 +431,15 @@ def main():
         connect_timeout=60.0,
         pool_timeout=60.0
     )
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).request(req).post_init(post_init).build()
     
-    app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CommandHandler("notlar", notes_cmd))
-    app.add_handler(CommandHandler("hatirlaticilar", reminders_cmd))
-    app.add_handler(CommandHandler("yedek", backup_cmd))
-    
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    
-    print("🚀 Telegram Second Brain Botu başlatıldı ve dinliyor...")
-    app.run_polling(drop_pending_updates=True)
+    try:
+        render_url = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("WEBHOOK_URL")
+        if render_url:
+            asyncio.run(run_webhook_mode(req, render_url))
+        else:
+            run_polling_mode(req)
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot durduruldu.")
 
 if __name__ == "__main__":
     main()
