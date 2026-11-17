@@ -2,6 +2,7 @@ import os
 import sys
 import logging
 import asyncio
+import httpx
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -37,9 +38,7 @@ if ALLOWED_USER_ID:
         ALLOWED_USER_ID = None
 
 def is_authorized(user_id: int) -> bool:
-    """Kullanıcının bota erişim yetkisi var mı?"""
     if not ALLOWED_USER_ID:
-        # Eğer henüz ALLOWED_USER_ID ayarlanmadıysa ilk yazan kişiyi kabul edebiliriz
         return True
     return user_id == ALLOWED_USER_ID
 
@@ -50,9 +49,28 @@ async def check_auth(update: Update) -> bool:
         return False
     return True
 
+# --- Yardımcı: Telegram dosyasını doğrudan httpx ile indir ---
+async def download_telegram_file(bot, file_id: str, dest_path: str):
+    """Telegram dosyasını python-telegram-bot yerine doğrudan httpx ile indirir."""
+    file_obj = await bot.get_file(file_id)
+    file_url = file_obj.file_path
+    # file_path zaten tam URL olabilir (https://api.telegram.org/file/bot.../...)
+    if not file_url.startswith("http"):
+        file_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_url}"
+    
+    logger.info(f"Dosya indiriliyor: {file_url}")
+    
+    async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=60.0)) as client:
+        response = await client.get(file_url)
+        response.raise_for_status()
+        with open(dest_path, "wb") as f:
+            f.write(response.content)
+    
+    logger.info(f"Dosya başarıyla indirildi: {dest_path} ({os.path.getsize(dest_path)} bytes)")
+
+# --- Komutlar ---
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/start komutu"""
-    logger.info(f"/start komutu alındı: Kullanıcı {update.effective_user.id} ({update.effective_user.username})")
+    logger.info(f"/start komutu: Kullanıcı {update.effective_user.id} ({update.effective_user.username})")
     if not await check_auth(update):
         return
     user = update.effective_user
@@ -73,7 +91,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN)
 
 async def notes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/notlar komutu"""
     if not await check_auth(update):
         return
     user_id = update.effective_user.id
@@ -81,14 +98,12 @@ async def notes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not recent_notes:
         await update.message.reply_text("Henüz kayıtlı bir notun yok.")
         return
-    
     text = "📚 **Son Eklenen Notların:**\n\n"
     for n in recent_notes:
         text += f"• *[{n['created_at'][:16]}]* ({n['msg_type']}): {n['content'][:120]}...\n\n"
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
 async def reminders_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/hatirlaticilar komutu"""
     if not await check_auth(update):
         return
     user_id = update.effective_user.id
@@ -96,14 +111,12 @@ async def reminders_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not reminders:
         await update.message.reply_text("Bekleyen aktif bir hatırlatıcın bulunmuyor.")
         return
-    
     text = "⏰ **Bekleyen Hatırlatıcıların:**\n\n"
     for r in reminders:
         text += f"🔔 *Zaman:* {r['remind_at']}\n📌 *Görev:* {r['content']}\n\n"
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
 async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/yedek komutu: SQLite dosyasını Telegram'dan atar."""
     if not await check_auth(update):
         return
     if os.path.exists(db.DB_PATH):
@@ -115,8 +128,8 @@ async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Veritabanı henüz oluşturulmamış.")
 
+# --- İçerik Analiz ve Yönlendirme ---
 async def process_text_intent(update: Update, text: str, user_id: int):
-    """Metni AI ile analiz edip gerekli aksiyonu (not / sorgu / hatırlatıcı) çalıştırır."""
     parsed = ai_engine.classify_and_parse(text)
     action = parsed.get("action")
     
@@ -136,7 +149,7 @@ async def process_text_intent(update: Update, text: str, user_id: int):
         notes = db.search_notes(user_id, search_keywords, limit=5)
         answer = ai_engine.answer_query(text, notes)
         await update.message.reply_text(answer)
-    else: # note
+    else:
         summary = parsed.get("summary", text)
         tags = parsed.get("tags", "")
         db.add_note(user_id, "text", text, summary, tags)
@@ -147,24 +160,22 @@ async def process_text_intent(update: Update, text: str, user_id: int):
             parse_mode=ParseMode.MARKDOWN
         )
 
+# --- Metin Mesaj İşleyici ---
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Metin mesajları işleyici"""
-    logger.info(f"Gelen metin mesajı: {update.message.text} (Kullanıcı: {update.effective_user.id})")
+    logger.info(f"Metin: {update.message.text} (User: {update.effective_user.id})")
     if not await check_auth(update):
         return
     user_id = update.effective_user.id
     user_text = update.message.text
-    
-    # Kullanıcıya işlem yapıldığını hissettirmek için typing aksiyonu
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     try:
         await process_text_intent(update, user_text, user_id)
     except Exception as e:
-        logger.error(f"Hata: {e}", exc_info=True)
+        logger.error(f"Metin hata: {e}", exc_info=True)
         await update.message.reply_text(f"⚠️ Bir hata oluştu: {e}")
 
+# --- Sesli Mesaj İşleyici ---
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Sesli mesaj işleyici (Groq Whisper)"""
     if not await check_auth(update):
         return
     user_id = update.effective_user.id
@@ -172,68 +183,75 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     status_msg = await update.message.reply_text("⏳ Ses alınıyor ve indiriliyor...")
     
-    temp_dir = os.path.join(os.path.dirname(__file__), "temp")
+    temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp")
     os.makedirs(temp_dir, exist_ok=True)
     temp_audio_path = None
     
     try:
         voice = update.message.voice or update.message.audio
-        file = await context.bot.get_file(voice.file_id, read_timeout=120.0, write_timeout=120.0, connect_timeout=60.0)
         temp_audio_path = os.path.join(temp_dir, f"voice_{voice.file_id}.ogg")
-        await file.download_to_drive(temp_audio_path, read_timeout=120.0, write_timeout=120.0)
         
-        await status_msg.edit_text("⏳ Ses yapay zeka ile çözümleniyor (Groq Whisper)...")
+        # Doğrudan httpx ile indir (python-telegram-bot'un download metodunu atla)
+        await download_telegram_file(context.bot, voice.file_id, temp_audio_path)
         
-        # Groq Whisper ile deşifre et
+        await status_msg.edit_text("⏳ Ses yapay zeka ile çözümleniyor...")
+        
         transcribed_text = ai_engine.transcribe_audio(temp_audio_path)
         
         await status_msg.edit_text(f"🎙️ *Ses Deşifresi:*\n\"{transcribed_text}\"", parse_mode=ParseMode.MARKDOWN)
         
-        # Deşifre edilen metni intent motoruna sok
         await process_text_intent(update, transcribed_text, user_id)
     except Exception as e:
-        logger.error(f"Ses işleme hatası: {type(e).__name__}: {e}", exc_info=True)
-        await status_msg.edit_text(f"⚠️ Ses işlenirken hata oluştu [{type(e).__name__}]: {e}")
+        logger.error(f"Ses hatası: {type(e).__name__}: {e}", exc_info=True)
+        try:
+            await status_msg.edit_text(f"⚠️ Ses hatası [{type(e).__name__}]: {e}")
+        except Exception:
+            await update.message.reply_text(f"⚠️ Ses hatası [{type(e).__name__}]: {e}")
     finally:
         if temp_audio_path and os.path.exists(temp_audio_path):
             os.remove(temp_audio_path)
 
+# --- Fotoğraf İşleyici ---
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Fotoğraf işleyici (Gemini / Vision)"""
     if not await check_auth(update):
         return
     user_id = update.effective_user.id
     logger.info(f"Fotoğraf alındı, kullanıcı: {user_id}")
     
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="upload_photo")
+    status_msg = await update.message.reply_text("⏳ Fotoğraf alınıyor ve inceleniyor...")
     
-    temp_dir = os.path.join(os.path.dirname(__file__), "temp")
+    temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp")
     os.makedirs(temp_dir, exist_ok=True)
     temp_img_path = None
     
     try:
         photo = update.message.photo[-1]
         caption = update.message.caption or ""
-        file = await context.bot.get_file(photo.file_id, read_timeout=120.0, write_timeout=120.0, connect_timeout=60.0)
         temp_img_path = os.path.join(temp_dir, f"img_{photo.file_id}.jpg")
-        await file.download_to_drive(temp_img_path, read_timeout=120.0, write_timeout=120.0)
+        
+        await download_telegram_file(context.bot, photo.file_id, temp_img_path)
+        
+        await status_msg.edit_text("⏳ Fotoğraf yapay zeka ile analiz ediliyor...")
         
         analysis = ai_engine.analyze_image(temp_img_path, caption)
         db.add_note(user_id, "photo", analysis, summary=analysis[:100], tags="görsel,fotoğraf")
-        await update.message.reply_text(
-            f"📷 **Görsel İncelendi ve Hafızaya Eklendi!**\n\n"
-            f"{analysis}",
+        
+        await status_msg.edit_text(
+            f"📷 **Görsel İncelendi ve Hafızaya Eklendi!**\n\n{analysis}",
             parse_mode=ParseMode.MARKDOWN
         )
     except Exception as e:
-        logger.error(f"Görsel işleme hatası: {e}", exc_info=True)
-        await update.message.reply_text(f"⚠️ Görsel işlenirken bir sorun oluştu: {e}")
+        logger.error(f"Görsel hatası: {e}", exc_info=True)
+        try:
+            await status_msg.edit_text(f"⚠️ Görsel hatası [{type(e).__name__}]: {e}")
+        except Exception:
+            await update.message.reply_text(f"⚠️ Görsel hatası [{type(e).__name__}]: {e}")
     finally:
         if temp_img_path and os.path.exists(temp_img_path):
             os.remove(temp_img_path)
 
+# --- Hatırlatıcı Kontrolcüsü ---
 async def reminder_checker_job(context: ContextTypes.DEFAULT_TYPE):
-    """Her 30 saniyede bir vakti gelen hatırlatıcıları kontrol eder ve gönderir."""
     due_items = db.get_due_reminders()
     for item in due_items:
         user_id = item["user_id"]
@@ -243,13 +261,15 @@ async def reminder_checker_job(context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(
                 chat_id=user_id,
                 text=f"🔔 **HATIRLATMA ZAMANI!**\n\n📌 {content}",
-                parse_mode=ParseMode.MARKDOWN
+                parse_mode=ParseMode.MARKDOWN,
+                disable_notification=False
             )
             db.mark_reminder_completed(reminder_id)
             logger.info(f"Hatırlatıcı iletildi: ID {reminder_id} -> User {user_id}")
         except Exception as e:
-            logger.error(f"Hatırlatıcı gönderme hatası (ID {reminder_id}): {e}")
+            logger.error(f"Hatırlatıcı hatası (ID {reminder_id}): {e}")
 
+# --- Render Web Sunucusu (Uyku Engelleme) ---
 from aiohttp import web
 
 async def health_check(request):
@@ -264,25 +284,20 @@ async def start_web_server():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logger.info(f"Render uyumlu Web Sunucusu {port} portunda başlatıldı.")
+    logger.info(f"Web sunucusu {port} portunda başlatıldı.")
 
 async def post_init(application: Application):
-    """Bot başladıktan sonra çalıştırılacak kurulumlar (JobQueue & Web Server)"""
     if application.job_queue:
         application.job_queue.run_repeating(reminder_checker_job, interval=30, first=5)
         logger.info("Hatırlatıcı job'ı başlatıldı.")
-    
-    # Render için HTTP Web Server başlat
     asyncio.create_task(start_web_server())
 
+# --- Ana Giriş ---
 def main():
-    # Veritabanını hazırla
     db.init_db()
     
     if not TELEGRAM_BOT_TOKEN:
         print("\n❌ TELEGRAM_BOT_TOKEN bulunamadı!")
-        print("Lütfen bir .env dosyası oluşturup veya terminalden TELEGRAM_BOT_TOKEN değişkenini tanımlayın.")
-        print("Örnek: export TELEGRAM_BOT_TOKEN='123456:ABC-DEF...'")
         sys.exit(1)
         
     req = HTTPXRequest(
@@ -294,20 +309,17 @@ def main():
     )
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).request(req).post_init(post_init).build()
     
-    # Komutlar
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("notlar", notes_cmd))
     app.add_handler(CommandHandler("hatirlaticilar", reminders_cmd))
     app.add_handler(CommandHandler("yedek", backup_cmd))
     
-    # Mesajlar
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     
     print("🚀 Telegram Second Brain Botu başlatıldı ve dinliyor...")
-    app.run_polling(drop_pending_updates=False)
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
-
