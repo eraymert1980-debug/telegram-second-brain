@@ -170,7 +170,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     logger.info(f"Sesli mesaj alındı, kullanıcı: {user_id}")
     
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="record_voice")
+    status_msg = await update.message.reply_text("⏳ Ses alınıyor ve indiriliyor...")
     
     temp_dir = os.path.join(os.path.dirname(__file__), "temp")
     os.makedirs(temp_dir, exist_ok=True)
@@ -182,15 +182,18 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         temp_audio_path = os.path.join(temp_dir, f"voice_{voice.file_id}.ogg")
         await file.download_to_drive(temp_audio_path, read_timeout=120.0, write_timeout=120.0)
         
+        await status_msg.edit_text("⏳ Ses yapay zeka ile çözümleniyor (Groq Whisper)...")
+        
         # Groq Whisper ile deşifre et
         transcribed_text = ai_engine.transcribe_audio(temp_audio_path)
-        await update.message.reply_text(f"🎙️ *Ses Deşifresi:*\n\"{transcribed_text}\"", parse_mode=ParseMode.MARKDOWN)
+        
+        await status_msg.edit_text(f"🎙️ *Ses Deşifresi:*\n\"{transcribed_text}\"", parse_mode=ParseMode.MARKDOWN)
         
         # Deşifre edilen metni intent motoruna sok
         await process_text_intent(update, transcribed_text, user_id)
     except Exception as e:
-        logger.error(f"Ses işleme hatası: {e}", exc_info=True)
-        await update.message.reply_text(f"⚠️ Ses işlenirken bir sorun oluştu: {e}")
+        logger.error(f"Ses işleme hatası: {type(e).__name__}: {e}", exc_info=True)
+        await status_msg.edit_text(f"⚠️ Ses işlenirken hata oluştu [{type(e).__name__}]: {e}")
     finally:
         if temp_audio_path and os.path.exists(temp_audio_path):
             os.remove(temp_audio_path)

@@ -23,9 +23,9 @@ def transcribe_audio(audio_path: str) -> str:
     if not groq_client:
         raise ValueError("GROQ_API_KEY ayarlanmamış!")
     
-    with open(audio_path, "rb") as file:
+    with open(audio_path, "rb") as file_obj:
         transcription = groq_client.audio.transcriptions.create(
-            file=(os.path.basename(audio_path), file.read()),
+            file=(os.path.basename(audio_path), file_obj),
             model="whisper-large-v3-turbo",
             language="tr",
             response_format="text"
