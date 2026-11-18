@@ -85,13 +85,30 @@ def search_notes(user_id: int, query: str, limit: int = 5):
     conn = get_connection()
     cursor = conn.cursor()
     
-    # Önce FTS ile dene
+    # Kelimeleri temizle ve ekleri/bağlaçları ayıkla
     cleaned_query = "".join(c for c in query if c.isalnum() or c.isspace()).strip()
     words = cleaned_query.split()
+    stopwords = {"ne", "nedir", "neydi", "kim", "kimdir", "kaç", "kaçtı", "bana", "söyle", "ve", "ile", "de", "da", "mı", "mi", "mu", "mü"}
     
+    search_terms = []
+    for w in words:
+        wl = w.lower()
+        if wl in stopwords:
+            continue
+        search_terms.append(w)
+        # Türkçe iyelik eki temizleme (Örn: mertin -> mert, zarifenin -> zarife)
+        for suffix in ["nin", "nın", "nun", "nün", "in", "ın", "un", "ün"]:
+            if len(wl) > len(suffix) + 2 and wl.endswith(suffix):
+                base = w[:-len(suffix)]
+                if base not in search_terms:
+                    search_terms.append(base)
+    
+    if not search_terms:
+        search_terms = words
+        
     results = []
-    if words:
-        fts_match = " OR ".join([f'"{w}"*' for w in words])
+    if search_terms:
+        fts_match = " OR ".join([f'"{w}"*' for w in search_terms])
         try:
             cursor.execute("""
                 SELECT n.id, n.created_at, n.msg_type, n.content, n.summary
@@ -105,17 +122,23 @@ def search_notes(user_id: int, query: str, limit: int = 5):
         except Exception:
             results = []
             
-    # Eğer FTS boş döndüyse veya hata verdiyse LIKE ile arayalım
+    # Eğer FTS boş döndüyse anahtar kelimelerle LIKE ile arayalım
     if not results:
-        like_query = f"%{query}%"
-        cursor.execute("""
-            SELECT id, created_at, msg_type, content, summary
-            FROM notes
-            WHERE user_id = ? AND (content LIKE ? OR summary LIKE ? OR tags LIKE ?)
-            ORDER BY id DESC
-            LIMIT ?
-        """, (user_id, like_query, like_query, like_query, limit))
-        results = [dict(row) for row in cursor.fetchall()]
+        for t in search_terms:
+            if len(t) >= 3:
+                like_term = f"%{t}%"
+                cursor.execute("""
+                    SELECT id, created_at, msg_type, content, summary
+                    FROM notes
+                    WHERE user_id = ? AND (content LIKE ? OR summary LIKE ? OR tags LIKE ?)
+                    ORDER BY id DESC
+                    LIMIT ?
+                """, (user_id, like_term, like_term, like_term, limit))
+                for row in cursor.fetchall():
+                    if row["id"] not in [r["id"] for r in results]:
+                        results.append(dict(row))
+                if len(results) >= limit:
+                    break
         
     # Eğer hala çok az sonuç varsa son eklenen notları getir
     if len(results) < 2:

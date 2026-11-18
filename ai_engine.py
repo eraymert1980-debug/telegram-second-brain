@@ -57,71 +57,84 @@ def analyze_media(file_path: str, mime_type: str = "image/jpeg", caption: str = 
 
             reader = pypdf.PdfReader(file_path)
 
-            # 1. Önce dijital metin var mı kontrol et (e-fatura veya metin belgeleri için anında sonuç)
-            extracted_text = ""
-            for page in reader.pages:
-                t = page.extract_text() or ""
-                if t.strip():
-                    extracted_text += t + "\n"
+            # 1. Önce sayfaları tara: Görsel var mı?
+            total_images = sum(len(p.images) for p in reader.pages)
 
-            if len(extracted_text.strip()) > 80:
-                # Belge zaten okunabilir dijital metin barındırıyor
-                summary_prompt = (
-                    "Bu belgenin içeriğini bir kişisel hafıza ve not asistanı olarak incele:\n"
-                    "Önemli başlıkları, kişi/kurum isimlerini, numaraları (T.C., fatura, hesap, IBAN vb.), "
-                    "tarihleri ve kritik maddeleri net, aranabilir bir Türkçe ile madde madde listele.\n"
-                    f"BELGE METNİ:\n{extracted_text.strip()}"
-                )
-                if caption:
-                    summary_prompt += f"\nKullanıcının bu belgeye eklediği not: '{caption}'"
+            # SADECE hiç görsel barındırmayan saf dijital PDF ise (e-fatura, dijital sözleşme vb.) metin olarak işle:
+            if total_images == 0:
+                extracted_text = ""
+                for page in reader.pages:
+                    t = page.extract_text() or ""
+                    if t.strip():
+                        extracted_text += t + "\n"
 
-                # Groq ile 200 milisaniyede özetle
-                if groq_client:
-                    for model in ["qwen/qwen3.8-27b", "openai/gpt-oss-120b"]:
-                        try:
-                            resp = groq_client.chat.completions.create(
-                                model=model,
-                                messages=[{"role": "user", "content": summary_prompt}],
-                                temperature=0.1
-                            )
-                            ans = resp.choices[0].message.content.strip()
-                            if ans:
-                                return ans
-                        except Exception:
-                            continue
+                if len(extracted_text.strip()) > 50:
+                    summary_prompt = (
+                        "Bu dijital belgenin içeriğini bir kişisel hafıza ve not asistanı olarak incele:\n"
+                        "Önemli başlıkları, kişi/kurum isimlerini, numaraları (T.C., fatura, hesap, IBAN vb.), "
+                        "tarihleri ve kritik maddeleri net, aranabilir bir Türkçe ile madde madde listele.\n"
+                        f"BELGE METNİ:\n{extracted_text.strip()}"
+                    )
+                    if caption:
+                        summary_prompt += f"\nKullanıcının bu belgeye eklediği not: '{caption}'"
 
-            # 2. Taranmış kamera PDF'i ise: İçindeki sayfaların fotoğraflarını çekip optimize et
-            for page in reader.pages:
+                    if groq_client:
+                        for model in ["qwen/qwen3.8-27b", "openai/gpt-oss-120b"]:
+                            try:
+                                resp = groq_client.chat.completions.create(
+                                    model=model,
+                                    messages=[{"role": "user", "content": summary_prompt}],
+                                    temperature=0.1
+                                )
+                                ans = resp.choices[0].message.content.strip()
+                                if ans:
+                                    return ans
+                            except Exception:
+                                continue
+
+            # 2. Taranmış kamera PDF'i ise: TÜM sayfaların fotoğraflarını çekip optimize et
+            for page_idx, page in enumerate(reader.pages, 1):
                 for img_file in page.images:
                     pil_img = Image.open(io.BytesIO(img_file.data))
                     pil_img = ImageOps.exif_transpose(pil_img)
                     if pil_img.mode in ("RGBA", "P"):
                         pil_img = pil_img.convert("RGB")
-                    # Hız optimizasyonu: 1024px ve BILINEAR ile CPU'yu kasmadan anında küçült
+                    # Hız optimizasyonu: 1024px ve BILINEAR ile anında küçült
                     pil_img.thumbnail((1024, 1024), Image.Resampling.BILINEAR)
 
                     buf = io.BytesIO()
-                    pil_img.save(buf, format="JPEG", quality=80, optimize=True)
+                    pil_img.save(buf, format="JPEG", quality=82, optimize=True)
                     opt_bytes = buf.getvalue()
-                    parts_to_send.append(types.Part.from_bytes(data=opt_bytes, mime_type="image/jpeg"))
+                    parts_to_send.append((page_idx, types.Part.from_bytes(data=opt_bytes, mime_type="image/jpeg")))
 
         except Exception as pdf_err:
             print(f"pypdf ayrıştırma hatası, doğrudan PDF baytları gönderilecek: {pdf_err}")
 
     # Eğer PDF'ten optimize görsel çıkarılamadıysa veya normal bir fotoğrafsa:
-    if not parts_to_send:
+    contents = []
+    if parts_to_send:
+        for item in parts_to_send:
+            if isinstance(item, tuple):
+                page_num, part_obj = item
+                contents.append(f"--- [BELGE SAYFASI #{page_num}] ---")
+                contents.append(part_obj)
+            else:
+                contents.append(item)
+    else:
         with open(file_path, "rb") as f:
             raw_bytes = f.read()
         target_mime = "application/pdf" if is_pdf else "image/jpeg"
-        parts_to_send.append(types.Part.from_bytes(data=raw_bytes, mime_type=target_mime))
+        contents.append(types.Part.from_bytes(data=raw_bytes, mime_type=target_mime))
 
     if is_pdf:
         prompt = (
-            "Bu belgedeki (kimlik, pasaport, fatura vb.) önemli bilgileri doğrudan maddeler halinde çıkar:\n"
-            "- Belge Türü ve Kişi Adı Soyadı\n"
-            "- T.C. Kimlik No / Seri No / Doğum Tarihi / Anne-Baba Adı\n"
-            "- Varsa Geçerlilik Tarihi ve Adres\n"
-            "Gereksiz uzun başlıkları, çizgi/bölümleri ve MRZ tekrar kodlarını atla, sadece net bilgileri yaz (kısa ve hızlı yanıt)."
+            "GÖREVİN: Gönderilen TÜM sayfaları/görselleri (özellikle kimliğin hem ÖN hem ARKA yüzünü) eksiksiz inceleyip hafızaya kaydetmektir.\n\n"
+            "MUTLAKA ÇIKARILACAK BİLGİLER:\n"
+            "- Belge Türü & Belge Sahibinin Adı Soyadı\n"
+            "- T.C. Kimlik No / Seri No / Doğum Tarihi / Uyruk\n"
+            "- Anne Adı ve Baba Adı (DİKKAT: T.C. Kimlik Kartlarında Anne Adı ve Baba Adı İKİNCİ SAYFADA / ARKA YÜZDE yer alır. 2. sayfayı dikkatle oku; Anne Adı ve Baba Adı'nı MUTLAKA yaz!)\n"
+            "- Veren Makam, Son Geçerlilik Tarihi ve diğer tüm kayıtlar.\n\n"
+            "ÖNEMLİ: Ön yüzde bulunmayan bilgiler arka yüzde yer alır; her iki sayfadaki tüm verileri eksiksiz birleştir."
         )
     else:
         # Hız Optimizasyonu: Dolgu cümlelerini engelle, doğrudan net bilgileri maddeler halinde çıkar
@@ -134,12 +147,11 @@ def analyze_media(file_path: str, mime_type: str = "image/jpeg", caption: str = 
     if caption:
         prompt += f"\nKullanıcının bu belgeye/fotoğrafa eklediği not: '{caption}'"
 
-    contents = parts_to_send + [prompt]
+    contents.append(prompt)
 
-    # Hızlandırma Konfigürasyonu: Thinking gecikmesini sıfırla, kısa ve net token üretimi zorunlu kıl
+    # Hızlandırma Konfigürasyonu: Token kesilmesini önlemek için 600 token, hafif akıl yürütme desteği
     fast_config = types.GenerateContentConfig(
-        thinking_config=types.ThinkingConfig(thinking_budget=0),
-        max_output_tokens=350
+        max_output_tokens=600
     )
 
     # Sadece güncel ve resmi aktif Gemini 3 modelleri (ve 503 yoğunluk dalgalanması koruması)
@@ -258,7 +270,8 @@ Kullanıcıdan gelen mesajı analiz et ve SADECE geçerli bir JSON objesi dönd�
 
     # 3. Fallback: Eğer modeller JSON üretmeyi reddederse akıllı sezgisel yönlendirme (0 ms)
     lower_text = text.lower()
-    if any(q in lower_text for q in ["neydi", "kaçtı", "nerede", "kimdi", "ne zaman", "hangisi", "?"]):
+    query_words = ["neydi", "kaçtı", "nerede", "kimdi", "ne zaman", "hangisi", "?", "ne", "nedir", "nelerdir", "kim", "kimdir", "kaç", "kaçtır", "babası", "annesi", "baba adı", "anne adı", "bilgisi", "numarası"]
+    if any(q in lower_text for q in query_words):
         return {"action": "query", "search_keywords": text, "question": text}
     elif any(w in lower_text for w in ["iptal", "vazgeç", "sil"]) and any(w in lower_text for w in ["hatırlat", "alarm"]):
         return {"action": "cancel_reminder"}
