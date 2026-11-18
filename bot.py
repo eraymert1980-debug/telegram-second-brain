@@ -277,7 +277,15 @@ async def edit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update):
         return
-    if os.path.exists(db.DB_PATH):
+    if db.is_turso():
+        await update.message.reply_text(
+            "☁️ **Hafızanız Turso Kalıcı Bulut Kasasında!**\n\n"
+            "Veritabanınız Render sunucu diskinde değil, AWS Oregon veri merkezinde Turso bulutunda 7/24 kesintisiz saklanmaktadır.\n\n"
+            "• Sunucu yeniden başlasa veya güncellense bile hiçbir veriniz silinmez.\n"
+            "• Dilediğiniz zaman [app.turso.tech](https://app.turso.tech) adresinden 'Download SQLite File' butonuna basarak tüm veritabanını indirebilirsiniz.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    elif os.path.exists(db.DB_PATH):
         await update.message.reply_document(
             document=open(db.DB_PATH, "rb"),
             filename=f"brain_backup_{datetime.now().strftime('%Y%m%d_%H%M')}.db",
